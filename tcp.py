@@ -100,7 +100,8 @@ class Conexao:
             self.servidor.rede.enviar(response, src_addr)
         elif (seq_no == self.expected_seq_no):
             self.expected_seq_no += (len(payload) if payload else 0)
-            self.callback(self, payload)
+            if (len(payload)):
+                self.callback(self, payload)
             self.my_len_seq_no = ack_no
             if (flags & FLAGS_ACK == FLAGS_ACK):
                 if (len(payload) > 0):
