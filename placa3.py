@@ -9,7 +9,90 @@ from slip import CamadaEnlace   # copie o arquivo do T4
 
 # Este é um exemplo de um programa que faz eco, ou seja, envia de volta para
 # o cliente tudo que for recebido em uma conexão.
+# Função para logar mensagens no console
+def log(msg, *args, **kwargs):
+    print('[LOG]::', msg, *args, **kwargs)
 
+# Define o terminador de mensagem com base no sistema operacional
+# MSG_TERMINATOR = b'\n' if system() == 'Darwin' else b'\r\n'
+MSG_TERMINATOR = b'\r\n'
+
+# Tabelas para armazenar conexões, usuários e canais
+CONNS_TABLE = {}  # Armazena mensagens pendentes :: { 'id_conn': 'mensagem' }
+USERS_TO_ID_TABLE = {}  # Mapeia apelidos para IDs de conexão :: { 'apelido': 'id_conn' }
+CHANNEL_NAME_TO_USER_LST_TABLE = {}  # Mapeia canais para listas de usuários :: { 'canal': ['apelido0', 'apelido1', ...]}
+
+# Função para obter o apelido de um usuário a partir de sua conexão
+def get_nick_from_conn(conn):
+    try:
+        for nick, conn_id in USERS_TO_ID_TABLE.items():
+            if conn_id == id(conn):
+                return nick
+    except:
+        return '*'
+
+# Função para obter um objeto a partir de seu ID
+def get_object_by_id(id_):
+    for obj in gc.get_objects():
+        if id(obj) == id_:
+            return obj
+
+# Função para validar um nome de usuário
+def validar_nome(nome):
+    return re.match(br'^[a-zA-Z][a-zA-Z0-9_-]*$', nome) is not None
+
+# Função para criar uma mensagem formatada
+def msg(txt):
+    m = bytes(txt, 'utf-8') + MSG_TERMINATOR
+    log(f'[MSG CREATED]{m}')
+    return m
+
+# Função para lidar com a saída de um usuário
+def sair(conexao):
+    log(conexao, 'conexão fechada')
+
+    curr_usr = get_nick_from_conn(conexao)
+    for chnl_name, usr_lst in CHANNEL_NAME_TO_USER_LST_TABLE.items():
+        if curr_usr in usr_lst:
+            for usr in usr_lst:
+                if usr != curr_usr:
+                    get_object_by_id(USERS_TO_ID_TABLE[usr]).enviar(msg(f':{curr_usr} QUIT :Connection closed'))
+            CHANNEL_NAME_TO_USER_LST_TABLE[chnl_name].remove(curr_usr)
+
+    del USERS_TO_ID_TABLE[curr_usr]
+    conexao.fechar()
+
+# Função para garantir que a mensagem está completa e remover o terminador
+def get_full_msg_no_terminator(conexao, dados):
+    data = dados.split(b'\n')
+    msgs_data = []
+    for i, item in enumerate(data):
+        if i == len(data) - 1:
+            msgs_data.append(item)
+        else:
+            msgs_data.append(item + b'\n')
+
+    if not msgs_data[-1]:
+        msgs_data = msgs_data[:-1]
+
+    msgs = []
+
+    for msg_data in msgs_data:
+        if id(conexao) not in CONNS_TABLE:
+            CONNS_TABLE[id(conexao)] = b''
+
+        CONNS_TABLE[id(conexao)] += msg_data
+
+        if msg_data.endswith(b'\n'):
+            msgs.append((conexao, CONNS_TABLE[id(conexao)]))
+            del CONNS_TABLE[id(conexao)]
+
+    for i, msg in enumerate(msgs):
+        msgs[i] = (msg[0], msg[1][:-2])
+
+    return msgs
+
+# Função para processar dados recebidos de uma conexão
 def dados_recebidos(conexao, dados):
     log('[OBJ RCV]', conexao, dados)
 
@@ -127,7 +210,6 @@ def dados_recebidos(conexao, dados):
 def conexao_aceita(conexao):
     log(conexao, 'nova conexão')
     conexao.registrar_recebedor(dados_recebidos)
-
 ## Integração com as demais camadas
 
 nossa_ponta = '192.168.200.4'
