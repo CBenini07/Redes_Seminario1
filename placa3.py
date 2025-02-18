@@ -11,14 +11,122 @@ from slip import CamadaEnlace   # copie o arquivo do T4
 # o cliente tudo que for recebido em uma conexão.
 
 def dados_recebidos(conexao, dados):
+    log('[OBJ RCV]', conexao, dados)
+
     if dados == b'':
-        conexao.fechar()
-    else:
-        conexao.enviar(dados)   # envia de volta
+        return sair(conexao)
 
+    for msg_tuple in get_full_msg_no_terminator(conexao, dados):
+        conexao, dados = msg_tuple
+
+        try:
+            cmd, payload = dados.split(b' ', 1)
+        except:
+            cmd, payload = dados.split(b' ', 1)[0], None
+
+        cmd = cmd.upper()
+
+        if cmd == b'PING':
+            conexao.enviar(msg(f':server PONG server :{payload.decode()}'))
+
+        if cmd == b'NICK':
+            orig_payload = payload
+            payload = bytes(payload.decode("utf-8").lower(), 'utf-8')
+            old_nick = get_nick_from_conn(conexao)
+            if not validar_nome(payload):
+                if not id(conexao) in USERS_TO_ID_TABLE.values():
+                    apelido_atual = '*'
+                return conexao.enviar(msg(f':server 432 {apelido_atual} {orig_payload.decode("utf-8")} :Erroneous nickname'))
+
+            if payload.decode("utf-8") in USERS_TO_ID_TABLE:
+                log('NICK ALREADY EXISTS')
+                old_nick = get_nick_from_conn(conexao)
+                old_nick = old_nick if old_nick is not None else '*'
+                return conexao.enviar(msg(f':server 433 {old_nick} {orig_payload.decode("utf-8")} :Nickname is already in use'))
+
+            if old_nick in USERS_TO_ID_TABLE.keys():
+                del USERS_TO_ID_TABLE[old_nick]
+                new_nick = payload.decode("utf-8")
+                USERS_TO_ID_TABLE[new_nick] = id(conexao)
+
+                for channel_name, usrs_in_channel in CHANNEL_NAME_TO_USER_LST_TABLE.items():
+                    if old_nick in usrs_in_channel:
+                        CHANNEL_NAME_TO_USER_LST_TABLE[channel_name].remove(old_nick)
+                        CHANNEL_NAME_TO_USER_LST_TABLE[channel_name].append(new_nick)
+
+                return conexao.enviar(msg(f':{old_nick} NICK {new_nick}'))
+
+            USERS_TO_ID_TABLE[payload.decode("utf-8")] = id(conexao)
+            conexao.enviar(msg(f':server 001 {payload.decode("utf-8")} :Welcome'))
+            conexao.enviar(msg(f':server 422 {payload.decode("utf-8")} :MOTD File is missing'))
+
+        if cmd == b'PRIVMSG':
+            tgt, msg_bytes = payload.split(b' :', 1)
+            tgt = tgt.decode("utf-8")
+            try:
+                if not tgt.startswith('#'):
+                    tgt_conn_id = USERS_TO_ID_TABLE[tgt.lower()]
+                    get_object_by_id(tgt_conn_id).enviar(
+                        msg(f':{get_nick_from_conn(conexao)} PRIVMSG {tgt} :{msg_bytes.decode("utf-8")}')
+                    )
+                else:
+                    curr_usr = get_nick_from_conn(conexao)
+                    for usr in CHANNEL_NAME_TO_USER_LST_TABLE[tgt.lower()]:
+                        tgt_conn_id = USERS_TO_ID_TABLE[usr.lower()]
+                        tgt_nick_obj = get_object_by_id(tgt_conn_id)
+
+                        if not tgt_nick_obj == conexao:
+                            tgt_nick_obj.enviar(msg(f':{curr_usr} PRIVMSG {tgt} :{msg_bytes.decode("utf-8")}'))
+
+            except KeyError as err:
+                log('[ERR]Key not found (tgt):', err)
+
+        if cmd == b'JOIN':
+            payload = bytes(payload.decode("utf-8").lower(), 'utf-8')
+            if not payload.startswith(b'#'):
+                return conexao.enviar(
+                    msg(f':server 403 {payload.decode("utf-8")} :No such channel')
+                )
+
+            channel_name = payload.decode("utf-8")
+            if channel_name not in CHANNEL_NAME_TO_USER_LST_TABLE:
+                CHANNEL_NAME_TO_USER_LST_TABLE[channel_name] = []
+
+            curr_usr = get_nick_from_conn(conexao)
+            if curr_usr not in CHANNEL_NAME_TO_USER_LST_TABLE[channel_name]:
+                CHANNEL_NAME_TO_USER_LST_TABLE[channel_name].append(curr_usr)
+
+            for usr in CHANNEL_NAME_TO_USER_LST_TABLE[channel_name]:
+                get_object_by_id(USERS_TO_ID_TABLE[usr]).enviar(msg(f':{curr_usr} JOIN :{channel_name}'))
+
+            channel_usrs_lst = CHANNEL_NAME_TO_USER_LST_TABLE[channel_name]
+            channel_usrs_lst.sort()
+            full_usr_str = " ".join(channel_usrs_lst)
+
+            n = 512 - len(f':server 353 {curr_usr} = {channel_name} :') - len(MSG_TERMINATOR)
+            chunks = [full_usr_str[i:i+n] for i in range(0, len(full_usr_str), n)]
+            conexao.enviar(msg(f':server 353 {curr_usr} = {channel_name} :{" ".join(chunks)}'))
+            return conexao.enviar(msg(f':server 366 {curr_usr} {channel_name} :End of /NAMES list.'))
+
+        if cmd == b'PART':
+            payload = bytes(payload.decode("utf-8").lower(), 'utf-8')
+            channel_name = payload.decode("utf-8").split(' :')[0]
+            if not payload.startswith(b'#'):
+                return conexao.enviar(
+                    msg(f':server 403 {payload.decode("utf-8")} :No such channel')
+                )
+
+            curr_usr = get_nick_from_conn(conexao)
+           
+            for usr in CHANNEL_NAME_TO_USER_LST_TABLE[channel_name]:
+                get_object_by_id(USERS_TO_ID_TABLE[usr]).enviar(msg(f':{curr_usr} PART {channel_name}'))
+
+            CHANNEL_NAME_TO_USER_LST_TABLE[channel_name].remove(curr_usr)
+
+# Função para lidar com novas conexões
 def conexao_aceita(conexao):
-    conexao.registrar_recebedor(dados_recebidos)   # usa esse mesmo recebedor para toda conexão aceita
-
+    log(conexao, 'nova conexão')
+    conexao.registrar_recebedor(dados_recebidos)
 
 ## Integração com as demais camadas
 
